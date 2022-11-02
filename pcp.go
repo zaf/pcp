@@ -7,6 +7,15 @@
 
 /*
 	Parallel file copy.
+
+	Usage: pcp [source] [destination]
+
+	The number of parallel threads is by default the number of available CPU threads.
+	To change this set the enviroment variable PCP_THREADS with the desired number of threads:
+	PCP_THREADS=4 pcp [source] [destination]
+
+	To enable syncing of data on disk set the enviroment variable PCP_SYNC to true:
+	PCP_SYNC=true pcp [source] [destination]
 */
 
 package main
@@ -17,6 +26,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"strconv"
+	"strings"
 	"sync"
 
 	"golang.org/x/sys/unix"
@@ -56,36 +66,41 @@ func main() {
 		os.Exit(0)
 	}
 
-	var jobs int
-	threads := os.Getenv("PCP_THREADS")
-	if threads != "" {
-		jobs, err = strconv.Atoi(os.Getenv("PCP_THREADS"))
+	var fsync bool
+	if strings.ToLower(os.Getenv("PCP_SYNC")) == "true" {
+		fsync = true
+	}
+
+	var threads int
+	t := os.Getenv("PCP_THREADS")
+	if t != "" {
+		threads, err = strconv.Atoi(t)
 		if err != nil {
 			log.Println("PCP_THREADS:", err)
-			jobs = 0
+			threads = 0
 		}
 	}
-	if jobs == 0 {
-		jobs = runtime.NumCPU()
+	if threads == 0 {
+		threads = runtime.NumCPU()
 	}
 	// Don't run parallel jobs for small files
 	if srcSize < int64(256*os.Getpagesize()) {
-		jobs = 1
+		threads = 1
 	}
 
 	// Set runtime to panic instead of crashing on page faults.
 	debug.SetPanicOnFault(true)
 
-	chunk := align(srcSize / int64(jobs))
+	chunk := align(srcSize / int64(threads))
 	wg := new(sync.WaitGroup)
 	var startOffset, endOffset int64
 	endOffset = chunk
-	for i := 0; i < jobs; i++ {
-		if i == jobs-1 {
+	for i := 0; i < threads; i++ {
+		if i == threads-1 {
 			endOffset = srcSize
 		}
 		wg.Add(1)
-		go pcopy(src, dst, startOffset, endOffset, wg)
+		go pcopy(src, dst, startOffset, endOffset, fsync, wg)
 		startOffset += chunk
 		endOffset += chunk
 	}
@@ -94,7 +109,7 @@ func main() {
 }
 
 // Map file chunks in memory and copy data
-func pcopy(src, dst *os.File, start, end int64, wg *sync.WaitGroup) {
+func pcopy(src, dst *os.File, start, end int64, fsync bool, wg *sync.WaitGroup) {
 	defer wg.Done()
 	s, err := unix.Mmap(int(src.Fd()), start, int(end-start), unix.PROT_READ, unix.MAP_SHARED)
 	if err != nil {
@@ -121,20 +136,16 @@ func pcopy(src, dst *os.File, start, end int64, wg *sync.WaitGroup) {
 	if int64(n) != (end - start) {
 		log.Fatal("Short write")
 	}
-	err = unix.Msync(d, unix.MS_SYNC)
-	if err != nil {
-		log.Fatal(err)
+	if fsync {
+		err = unix.Msync(d, unix.MS_SYNC)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 }
 
 // Align to OS page size
 func align(size int64) int64 {
-	var aligned int64
 	pageSize := int64(os.Getpagesize())
-	if (size % pageSize) != 0 {
-		aligned = (size / pageSize) * (pageSize)
-	} else {
-		aligned = size
-	}
-	return aligned
+	return (size / pageSize) * pageSize
 }
