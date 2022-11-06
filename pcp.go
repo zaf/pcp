@@ -50,19 +50,27 @@ func main() {
 	if err != nil {
 		log.Fatalln(err)
 	}
+	if !stat.Mode().IsRegular() {
+		log.Fatalln("pcp only works on regular files")
+	}
+	srcMode := stat.Mode().Perm()
 	srcSize := stat.Size()
 
-	dst, err := os.Create(destination)
+	dst, err := os.OpenFile(destination, os.O_RDWR|os.O_CREATE, srcMode)
 	if err != nil {
 		log.Fatalln(err)
 	}
-	defer dst.Close()
 	err = dst.Truncate(srcSize)
 	if err != nil {
+		dst.Close()
 		log.Fatalln(err)
 	}
 
 	if srcSize == 0 {
+		err = dst.Close()
+		if err != nil {
+			log.Fatalln(err)
+		}
 		os.Exit(0)
 	}
 
@@ -105,6 +113,10 @@ func main() {
 		endOffset += chunk
 	}
 	wg.Wait()
+	err = dst.Close()
+	if err != nil {
+		log.Fatalln(err)
+	}
 	os.Exit(0)
 }
 
