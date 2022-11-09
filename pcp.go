@@ -16,11 +16,15 @@
 
 	To enable syncing of data on disk set the enviroment variable PCP_SYNC to true:
 	PCP_SYNC=true pcp [source] [destination]
+
+	To verify written data set the enviroment variable PCP_VERIFY to true:
+	PCP_VERIFY=true pcp [source] [destination]
 */
 
 package main
 
 import (
+	"crypto/md5"
 	"log"
 	"os"
 	"runtime"
@@ -30,6 +34,11 @@ import (
 	"sync"
 
 	"golang.org/x/sys/unix"
+)
+
+var (
+	fsync    bool
+	checksum bool
 )
 
 func main() {
@@ -74,9 +83,11 @@ func main() {
 		os.Exit(0)
 	}
 
-	var fsync bool
 	if strings.ToLower(os.Getenv("PCP_SYNC")) == "true" {
 		fsync = true
+	}
+	if strings.ToLower(os.Getenv("PCP_VERIFY")) == "true" {
+		checksum = true
 	}
 
 	var threads int
@@ -108,7 +119,7 @@ func main() {
 			endOffset = srcSize
 		}
 		wg.Add(1)
-		go pcopy(src, dst, startOffset, endOffset, fsync, wg)
+		go pcopy(src, dst, startOffset, endOffset, wg)
 		startOffset += chunk
 		endOffset += chunk
 	}
@@ -121,7 +132,7 @@ func main() {
 }
 
 // Map file chunks in memory and copy data
-func pcopy(src, dst *os.File, start, end int64, fsync bool, wg *sync.WaitGroup) {
+func pcopy(src, dst *os.File, start, end int64, wg *sync.WaitGroup) {
 	defer wg.Done()
 	s, err := unix.Mmap(int(src.Fd()), start, int(end-start), unix.PROT_READ, unix.MAP_SHARED)
 	if err != nil {
@@ -154,9 +165,12 @@ func pcopy(src, dst *os.File, start, end int64, fsync bool, wg *sync.WaitGroup) 
 			log.Fatal(err)
 		}
 	}
+	if checksum && md5.Sum(s) != md5.Sum(d) {
+		log.Fatalln("Verifying data failed")
+	}
 }
 
-// Align to OS page size
+// Align to OS page boundaries
 func align(size int64) int64 {
 	pageSize := int64(os.Getpagesize())
 	return (size / pageSize) * pageSize
