@@ -25,14 +25,15 @@ package main
 
 import (
 	"crypto/md5"
+	"errors"
 	"log"
 	"os"
 	"runtime"
 	"runtime/debug"
 	"strconv"
 	"strings"
-	"sync"
 
+	"golang.org/x/sync/errgroup"
 	"golang.org/x/sys/unix"
 )
 
@@ -42,8 +43,13 @@ var (
 )
 
 func main() {
+	var exitCode int
+	defer func() { os.Exit(exitCode) }()
+
 	if len(os.Args) != 3 {
-		log.Fatalln("Usage", os.Args[0], "[source] [destination]")
+		log.Println("Usage", os.Args[0], "[source] [destination]")
+		exitCode = 1
+		return
 	}
 	source := os.Args[1]
 	destination := os.Args[2]
@@ -52,35 +58,45 @@ func main() {
 
 	src, err := os.OpenFile(source, os.O_RDONLY, 0644)
 	if err != nil {
-		log.Fatalln(err)
+		log.Println(err)
+		exitCode = 1
+		return
 	}
 	defer src.Close()
 	stat, err := src.Stat()
 	if err != nil {
-		log.Fatalln(err)
+		log.Println(err)
+		exitCode = 1
+		return
 	}
 	if !stat.Mode().IsRegular() {
-		log.Fatalln("pcp only works on regular files")
+		log.Println("pcp only works on regular files")
+		exitCode = 1
+		return
 	}
 	srcMode := stat.Mode().Perm()
 	srcSize := stat.Size()
 
 	dst, err := os.OpenFile(destination, os.O_RDWR|os.O_CREATE, srcMode)
 	if err != nil {
-		log.Fatalln(err)
+		log.Println(err)
+		exitCode = 1
+		return
+	}
+	if srcSize == 0 {
+		err = dst.Close()
+		if err != nil {
+			log.Println(err)
+			exitCode = 1
+		}
+		return
 	}
 	err = dst.Truncate(srcSize)
 	if err != nil {
 		dst.Close()
-		log.Fatalln(err)
-	}
-
-	if srcSize == 0 {
-		err = dst.Close()
-		if err != nil {
-			log.Fatalln(err)
-		}
-		os.Exit(0)
+		log.Println(err)
+		exitCode = 1
+		return
 	}
 
 	if strings.ToLower(os.Getenv("PCP_SYNC")) == "true" {
@@ -111,69 +127,70 @@ func main() {
 	debug.SetPanicOnFault(true)
 
 	chunk := align(srcSize / int64(threads))
-	wg := new(sync.WaitGroup)
-	var startOffset, endOffset int64
-	endOffset = chunk
+	g := new(errgroup.Group)
 	for i := 0; i < threads; i++ {
+		var start, end int64
+		start = chunk * int64(i)
 		if i == threads-1 {
-			endOffset = srcSize
+			end = srcSize
+		} else {
+			end = start + chunk
 		}
-		wg.Add(1)
-		go pcopy(src, dst, startOffset, endOffset, wg)
-		startOffset += chunk
-		endOffset += chunk
+		g.Go(func() error { return pcopy(src, dst, start, end) })
 	}
-	wg.Wait()
+	err = g.Wait()
+	if err != nil {
+		dst.Close()
+		log.Println(err)
+		exitCode = 1
+		return
+	}
 	err = dst.Close()
 	if err != nil {
-		log.Fatalln(err)
+		log.Println(err)
+		exitCode = 1
+		return
 	}
-	os.Exit(0)
 }
 
 // Map file chunks in memory and copy data
-func pcopy(src, dst *os.File, start, end int64, wg *sync.WaitGroup) {
-	defer wg.Done()
-	s, err := unix.Mmap(int(src.Fd()), start, int(end-start), unix.PROT_READ, unix.MAP_SHARED)
-	if err != nil {
-		log.Fatalln(err)
-	}
-	defer unix.Munmap(s)
-	err = unix.Madvise(s, unix.MADV_SEQUENTIAL)
-	if err != nil {
-		log.Fatalln(err)
-	}
-	d, err := unix.Mmap(int(dst.Fd()), start, int(end-start), unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED)
-	if err != nil {
-		log.Fatalln(err)
-	}
-
+func pcopy(src, dst *os.File, start, end int64) (err error) {
 	// Handle page faults gracefully
 	defer func() {
 		if e := recover(); e != nil {
 			log.Fatalln(e)
 		}
 	}()
+	s, err := unix.Mmap(int(src.Fd()), start, int(end-start), unix.PROT_READ, unix.MAP_SHARED)
+	if err != nil {
+		return
+	}
+	defer unix.Munmap(s)
+	err = unix.Madvise(s, unix.MADV_SEQUENTIAL)
+	if err != nil {
+		return
+	}
+	d, err := unix.Mmap(int(dst.Fd()), start, int(end-start), unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED)
+	if err != nil {
+		return
+	}
 	n := copy(d, s)
 	if int64(n) != (end - start) {
 		unix.Munmap(d)
-		log.Fatalln("Short write")
+		return errors.New("short write")
 	}
 	if fsync {
 		err = unix.Msync(d, unix.MS_SYNC)
 		if err != nil {
 			unix.Munmap(d)
-			log.Fatalln(err)
+			return
 		}
 	}
 	if checksum && md5.Sum(s) != md5.Sum(d) {
 		unix.Munmap(d)
-		log.Fatalln("Verifying data failed")
+		return errors.New("verifying data failed")
 	}
-	err = unix.Munmap(d)
-	if err != nil {
-		log.Fatalln(err)
-	}
+	return unix.Munmap(d)
 }
 
 // Align to OS page boundaries
