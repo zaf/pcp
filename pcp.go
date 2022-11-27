@@ -107,7 +107,7 @@ func main() {
 		threads = 1
 	}
 
-	// Set runtime to panic instead of crashing on page faults.
+	// Set runtime to panic instead of crashing on bus errors.
 	debug.SetPanicOnFault(true)
 
 	chunk := align(srcSize / int64(threads))
@@ -128,12 +128,17 @@ func main() {
 	if err != nil {
 		log.Fatalln(err)
 	}
-	os.Exit(0)
 }
 
 // Map file chunks in memory and copy data
 func pcopy(src, dst *os.File, start, end int64, wg *sync.WaitGroup) {
 	defer wg.Done()
+	// Handle bus errors gracefully
+	defer func() {
+		if e := recover(); e != nil {
+			log.Fatalln(e)
+		}
+	}()
 	s, err := unix.Mmap(int(src.Fd()), start, int(end-start), unix.PROT_READ, unix.MAP_SHARED)
 	if err != nil {
 		log.Fatalln(err)
@@ -147,13 +152,6 @@ func pcopy(src, dst *os.File, start, end int64, wg *sync.WaitGroup) {
 	if err != nil {
 		log.Fatalln(err)
 	}
-
-	// Handle page faults gracefully
-	defer func() {
-		if e := recover(); e != nil {
-			log.Fatalln(e)
-		}
-	}()
 	n := copy(d, s)
 	if int64(n) != (end - start) {
 		unix.Munmap(d)
