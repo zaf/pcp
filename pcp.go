@@ -24,11 +24,9 @@
 package main
 
 import (
-	"crypto/md5"
 	"log"
 	"os"
 	"runtime"
-	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -107,9 +105,6 @@ func main() {
 		threads = 1
 	}
 
-	// Set runtime to panic instead of crashing on bus errors.
-	debug.SetPanicOnFault(true)
-
 	chunk := align(srcSize / int64(threads))
 	wg := new(sync.WaitGroup)
 	var startOffset, endOffset int64
@@ -133,49 +128,29 @@ func main() {
 // Map file chunks in memory and copy data
 func pcopy(src, dst *os.File, start, end int64, wg *sync.WaitGroup) {
 	defer wg.Done()
-	// Handle bus errors gracefully
-	defer func() {
-		if e := recover(); e != nil {
-			log.Fatalln(e)
-		}
-	}()
-	s, err := unix.Mmap(int(src.Fd()), start, int(end-start), unix.PROT_READ, unix.MAP_SHARED)
+	b := make([]byte, end-start)
+
+	n, err := unix.Pread(int(src.Fd()), b, start)
 	if err != nil {
 		log.Fatalln(err)
 	}
-	defer unix.Munmap(s)
-	err = unix.Madvise(s, unix.MADV_SEQUENTIAL)
-	if err != nil {
-		log.Fatalln(err)
-	}
-	d, err := unix.Mmap(int(dst.Fd()), start, int(end-start), unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED)
-	if err != nil {
-		log.Fatalln(err)
-	}
-	err = unix.Madvise(d, unix.MADV_SEQUENTIAL)
-	if err != nil {
-		log.Fatalln(err)
-	}
-	n := copy(d, s)
 	if int64(n) != (end - start) {
-		unix.Munmap(d)
+		log.Fatalln("Short read")
+	}
+	n, err = unix.Pwrite(int(dst.Fd()), b, start)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	if int64(n) != (end - start) {
 		log.Fatalln("Short write")
 	}
 	if fsync {
-		err = unix.Msync(d, unix.MS_SYNC)
+		err = dst.Sync()
 		if err != nil {
-			unix.Munmap(d)
 			log.Fatalln(err)
 		}
 	}
-	if checksum && md5.Sum(s) != md5.Sum(d) {
-		unix.Munmap(d)
-		log.Fatalln("Verifying data failed")
-	}
-	err = unix.Munmap(d)
-	if err != nil {
-		log.Fatalln(err)
-	}
+
 }
 
 // Align to OS page boundaries
