@@ -24,7 +24,6 @@
 package main
 
 import (
-	"crypto/md5"
 	"log"
 	"os"
 	"runtime"
@@ -148,27 +147,23 @@ func pcopy(src, dst *os.File, start, end int64, wg *sync.WaitGroup) {
 	if err != nil {
 		log.Fatalln(err)
 	}
-	d, err := unix.Mmap(int(dst.Fd()), start, int(end-start), unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED)
+	n, err := unix.Pwrite(int(dst.Fd()), s, start)
 	if err != nil {
+		unix.Munmap(s)
 		log.Fatalln(err)
 	}
-	n := copy(d, s)
 	if int64(n) != (end - start) {
-		unix.Munmap(d)
+		unix.Munmap(s)
 		log.Fatalln("Short write")
 	}
 	if fsync {
-		err = unix.Msync(d, unix.MS_SYNC)
+		err = dst.Sync()
 		if err != nil {
-			unix.Munmap(d)
+			unix.Munmap(s)
 			log.Fatalln(err)
 		}
 	}
-	if checksum && md5.Sum(s) != md5.Sum(d) {
-		unix.Munmap(d)
-		log.Fatalln("Verifying data failed")
-	}
-	err = unix.Munmap(d)
+	err = unix.Munmap(s)
 	if err != nil {
 		log.Fatalln(err)
 	}
