@@ -152,6 +152,10 @@ func pcopy(src, dst *os.File, start, end int64, wg *sync.WaitGroup) {
 	if err != nil {
 		log.Fatalln(err)
 	}
+	err = unix.Madvise(d, unix.MADV_SEQUENTIAL)
+	if err != nil {
+		log.Fatalln(err)
+	}
 	n := copy(d, s)
 	if int64(n) != (end - start) {
 		unix.Munmap(d)
