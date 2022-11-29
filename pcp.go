@@ -69,18 +69,18 @@ func main() {
 	if err != nil {
 		log.Fatalln(err)
 	}
-	err = dst.Truncate(srcSize)
-	if err != nil {
-		dst.Close()
-		log.Fatalln(err)
-	}
-
 	if srcSize == 0 {
 		err = dst.Close()
 		if err != nil {
 			log.Fatalln(err)
 		}
-		os.Exit(0)
+		return
+	}
+
+	err = unix.Fallocate(int(dst.Fd()), 0, 0, srcSize)
+	if err != nil {
+		dst.Close()
+		log.Fatalln(err)
 	}
 
 	if strings.ToLower(os.Getenv("PCP_SYNC")) == "true" {
@@ -107,9 +107,6 @@ func main() {
 		threads = 1
 	}
 
-	// Set runtime to panic instead of crashing on bus errors.
-	debug.SetPanicOnFault(true)
-
 	chunk := align(srcSize / int64(threads))
 	wg := new(sync.WaitGroup)
 	var startOffset, endOffset int64
@@ -133,7 +130,8 @@ func main() {
 // Map file chunks in memory and copy data
 func pcopy(src, dst *os.File, start, end int64, wg *sync.WaitGroup) {
 	defer wg.Done()
-	// Handle bus errors gracefully
+	// Set runtime to panic instead of crashing on bus errors.
+	debug.SetPanicOnFault(true)
 	defer func() {
 		if e := recover(); e != nil {
 			log.Fatalln(e)
