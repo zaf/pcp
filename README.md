@@ -10,9 +10,6 @@ To change this set the enviroment variable PCP_THREADS with the desired number o
 To enable syncing of data on disk set the enviroment variable PCP_SYNC to true:
 `PCP_SYNC=true pcp [source] [destination]`
 
-To verify written data set the enviroment variable PCP_VERIFY to true:
-`PCP_VERIFY=true pcp [source] [destination]`
-
 ### Unscientific test results:
 
 Desktop PC 24 threads, 64GB RAM, NVMe SSD

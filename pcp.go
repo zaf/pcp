@@ -17,14 +17,12 @@
 	To enable syncing of data on disk set the enviroment variable PCP_SYNC to true:
 	PCP_SYNC=true pcp [source] [destination]
 
-	To verify written data set the enviroment variable PCP_VERIFY to true:
-	PCP_VERIFY=true pcp [source] [destination]
 */
 
 package main
 
 import (
-	"crypto/md5"
+	"errors"
 	"log"
 	"os"
 	"runtime"
@@ -37,60 +35,21 @@ import (
 )
 
 var (
-	fsync    bool
-	checksum bool
+	fsync   bool
+	threads int
 )
 
 func main() {
-	if len(os.Args) != 3 {
-		log.Fatalln("Usage", os.Args[0], "[source] [destination]")
-	}
-	source := os.Args[1]
-	destination := os.Args[2]
-
+	var err error
 	log.SetFlags(log.Lshortfile)
 
-	src, err := os.OpenFile(source, os.O_RDONLY, 0644)
-	if err != nil {
-		log.Fatalln(err)
-	}
-	defer src.Close()
-	stat, err := src.Stat()
-	if err != nil {
-		log.Fatalln(err)
-	}
-	if !stat.Mode().IsRegular() {
-		log.Fatalln("pcp only works on regular files")
-	}
-	srcMode := stat.Mode().Perm()
-	srcSize := stat.Size()
-
-	dst, err := os.OpenFile(destination, os.O_RDWR|os.O_CREATE, srcMode)
-	if err != nil {
-		log.Fatalln(err)
-	}
-	if srcSize == 0 {
-		err = dst.Close()
-		if err != nil {
-			log.Fatalln(err)
-		}
-		return
-	}
-
-	err = unix.Fallocate(int(dst.Fd()), 0, 0, srcSize)
-	if err != nil {
-		dst.Close()
-		log.Fatalln(err)
+	if len(os.Args) != 3 {
+		log.Fatalln("Usage", os.Args[0], "[source] [destination]")
 	}
 
 	if strings.ToLower(os.Getenv("PCP_SYNC")) == "true" {
 		fsync = true
 	}
-	if strings.ToLower(os.Getenv("PCP_VERIFY")) == "true" {
-		checksum = true
-	}
-
-	var threads int
 	t := os.Getenv("PCP_THREADS")
 	if t != "" {
 		threads, err = strconv.Atoi(t)
@@ -102,6 +61,51 @@ func main() {
 	if threads == 0 {
 		threads = runtime.NumCPU()
 	}
+
+	source := os.Args[1]
+	destination := os.Args[2]
+	err = pcopy(source, destination)
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+}
+
+// Copy file in parallel
+func pcopy(source, destination string) error {
+	src, err := os.OpenFile(source, os.O_RDONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	stat, err := src.Stat()
+	if err != nil {
+		return err
+	}
+	if !stat.Mode().IsRegular() {
+		return errors.New("pcp only works on regular files")
+	}
+	srcMode := stat.Mode().Perm()
+	srcSize := stat.Size()
+
+	dst, err := os.OpenFile(destination, os.O_RDWR|os.O_CREATE, srcMode)
+	if err != nil {
+		return err
+	}
+	if srcSize == 0 {
+		err = dst.Close()
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+
+	err = dst.Truncate(srcSize)
+	if err != nil {
+		dst.Close()
+		return err
+	}
+
 	// Don't run parallel jobs for small files
 	if srcSize < int64(256*os.Getpagesize()) {
 		threads = 1
@@ -116,19 +120,20 @@ func main() {
 			endOffset = srcSize
 		}
 		wg.Add(1)
-		go pcopy(src, dst, startOffset, endOffset, wg)
+		go mcopy(src, dst, startOffset, endOffset, wg)
 		startOffset += chunk
 		endOffset += chunk
 	}
 	wg.Wait()
 	err = dst.Close()
 	if err != nil {
-		log.Fatalln(err)
+		return err
 	}
+	return nil
 }
 
 // Map file chunks in memory and copy data
-func pcopy(src, dst *os.File, start, end int64, wg *sync.WaitGroup) {
+func mcopy(src, dst *os.File, start, end int64, wg *sync.WaitGroup) {
 	defer wg.Done()
 	// Set runtime to panic instead of crashing on bus errors.
 	debug.SetPanicOnFault(true)
@@ -165,10 +170,6 @@ func pcopy(src, dst *os.File, start, end int64, wg *sync.WaitGroup) {
 			unix.Munmap(d)
 			log.Fatalln(err)
 		}
-	}
-	if checksum && md5.Sum(s) != md5.Sum(d) {
-		unix.Munmap(d)
-		log.Fatalln("Verifying data failed")
 	}
 	err = unix.Munmap(d)
 	if err != nil {
