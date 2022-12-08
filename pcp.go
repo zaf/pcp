@@ -8,7 +8,7 @@
 /*
 	Parallel file copy.
 
-	Usage: pcp [source] [destination]
+	Usage: pcp [-f] source destination
 
 	The number of parallel threads is by default the number of available CPU threads.
 	To change this set the enviroment variable PCP_THREADS with the desired number of threads:
@@ -23,6 +23,8 @@ package main
 
 import (
 	"errors"
+	"flag"
+	"fmt"
 	"log"
 	"os"
 	"runtime"
@@ -37,13 +39,16 @@ import (
 var (
 	fsync   bool
 	threads int
+	force   = flag.Bool("f", false, "force file overwriting")
 )
 
 func main() {
+	flag.Parse()
 	var err error
 	log.SetFlags(log.Lshortfile)
 
-	if len(os.Args) != 3 {
+	args := flag.Args()
+	if len(args) != 2 {
 		log.Fatalln("Usage", os.Args[0], "[source] [destination]")
 	}
 
@@ -62,8 +67,19 @@ func main() {
 		threads = runtime.NumCPU()
 	}
 
-	source := os.Args[1]
-	destination := os.Args[2]
+	source := args[0]
+	destination := args[1]
+	if !*force {
+		_, err = os.Stat(destination)
+		if !os.IsNotExist(err) {
+			fmt.Printf("File %s already exists, overwrite? (y/N)", destination)
+			var answer string
+			fmt.Scanln(&answer)
+			if strings.ToLower(answer) != "y" {
+				log.Fatalln("not overwritten")
+			}
+		}
+	}
 	err = pcopy(source, destination)
 	if err != nil {
 		log.Fatalln(err)

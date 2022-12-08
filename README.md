@@ -1,7 +1,7 @@
 # pcp
 Parallel file copy
 
-Usage: `pcp [source] [destination]`
+Usage: `pcp [-f] source destination`
 
 The number of parallel threads is by default the number of available CPU threads.
 To change this set the enviroment variable PCP_THREADS with the desired number of threads:
