@@ -141,11 +141,7 @@ func pcopy(source, destination string) error {
 		endOffset += chunk
 	}
 	wg.Wait()
-	err = dst.Close()
-	if err != nil {
-		return err
-	}
-	return nil
+	return dst.Close()
 }
 
 // Map file chunks in memory and copy data
