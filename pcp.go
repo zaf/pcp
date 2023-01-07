@@ -10,12 +10,12 @@
 
 	Usage: pcp [-f] source destination
 
-	The number of parallel threads is by default the number of available CPU threads.
-	To change this set the enviroment variable PCP_THREADS with the desired number of threads:
-	PCP_THREADS=4 pcp [source] [destination]
+	The number of parallel jobs is by default the number of available CPU threads.
+	To change this set the environment variable PCP_THREADS with the desired number of jobs:
+	PCP_THREADS=4 pcp source destination
 
-	To enable syncing of data on disk set the enviroment variable PCP_SYNC to true:
-	PCP_SYNC=true pcp [source] [destination]
+	To enable syncing of data on disk set the environment variable PCP_SYNC to true:
+	PCP_SYNC=true pcp source destination
 
 */
 
@@ -37,9 +37,9 @@ import (
 )
 
 var (
-	fsync   bool
-	threads int
-	force   = flag.Bool("f", false, "force file overwriting")
+	fsync bool
+	jobs  int
+	force = flag.Bool("f", false, "force file overwriting")
 )
 
 func main() {
@@ -57,18 +57,22 @@ func main() {
 	}
 	t := os.Getenv("PCP_THREADS")
 	if t != "" {
-		threads, err = strconv.Atoi(t)
+		jobs, err = strconv.Atoi(t)
 		if err != nil {
 			log.Println("PCP_THREADS:", err)
-			threads = 0
+			jobs = 0
 		}
 	}
-	if threads == 0 {
-		threads = runtime.NumCPU()
+	if jobs == 0 {
+		jobs = runtime.NumCPU()
 	}
 
 	source := args[0]
 	destination := args[1]
+	if source == destination {
+		log.Fatalln(source, "and", destination, "are the same file")
+	}
+
 	if !*force {
 		_, err = os.Stat(destination)
 		if !os.IsNotExist(err) {
@@ -124,15 +128,15 @@ func pcopy(source, destination string) error {
 
 	// Don't run parallel jobs for small files
 	if srcSize < int64(256*os.Getpagesize()) {
-		threads = 1
+		jobs = 1
 	}
 
-	chunk := align(srcSize / int64(threads))
+	chunk := align(srcSize / int64(jobs))
 	wg := new(sync.WaitGroup)
 	var startOffset, endOffset int64
 	endOffset = chunk
-	for i := 0; i < threads; i++ {
-		if i == threads-1 {
+	for i := 0; i < jobs; i++ {
+		if i == jobs-1 {
 			endOffset = srcSize
 		}
 		wg.Add(1)
@@ -164,10 +168,6 @@ func mcopy(src, dst *os.File, start, end int64, wg *sync.WaitGroup) {
 		log.Fatalln(err)
 	}
 	d, err := unix.Mmap(int(dst.Fd()), start, int(end-start), unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED)
-	if err != nil {
-		log.Fatalln(err)
-	}
-	err = unix.Madvise(d, unix.MADV_SEQUENTIAL)
 	if err != nil {
 		log.Fatalln(err)
 	}
