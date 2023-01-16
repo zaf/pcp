@@ -1,16 +1,22 @@
 # pcp
-Parallel file copy
+## Parallel file copy
 
-Usage: `pcp [-f] source destination`
+### Usage:
+`pcp [options] source destination`
 
-The number of parallel jobs is by default the number of available CPU threads.
-To change this set the environment variable PCP_THREADS with the desired number of jobs:
+### Description:
+The pcp utility copies the contents of the source file to the destination file.
+It maps the contets of the files in memory and copies data in parallel using
+a number of threads that by default is the number of available CPU threads.
 
-`PCP_THREADS=4 pcp source destination`
+### Options:
 
-To enable syncing of data on disk set the environment variable PCP_SYNC to true:
+**-f:** Overwrite destination file if it exists.
 
-`PCP_SYNC=true pcp source destination`
+**-s:** Sync file to disk after done copying data.
+
+**-t=[threads]:** Specifies the number of threads used
+to copy data simultaneously. This number is by default the number of available CPU threads.
 
 ### Unscientific test results:
 
