@@ -31,6 +31,7 @@ import (
 var (
 	force   = flag.Bool("f", false, "Overwrite destination file if it exists.")
 	fsync   = flag.Bool("s", false, "Sync file to disk after done copying data.")
+	frange  = flag.Bool("c", false, "Use copy_file_range to copy data (Linux only).")
 	threads = flag.Int("t", 0, "Specifies the number of threads used to copy data simultaneously.")
 )
 
@@ -121,7 +122,11 @@ func pcopy(source, destination string) error {
 			endOffset = srcSize
 		}
 		wg.Add(1)
-		go mcopy(src, dst, startOffset, endOffset, wg)
+		if *frange {
+			go fcopy(src, dst, startOffset, endOffset, wg)
+		} else {
+			go mcopy(src, dst, startOffset, endOffset, wg)
+		}
 		startOffset += chunk
 		endOffset += chunk
 	}
@@ -167,6 +172,22 @@ func mcopy(src, dst *os.File, start, end int64, wg *sync.WaitGroup) {
 	err = unix.Munmap(d)
 	if err != nil {
 		log.Fatalln(err)
+	}
+}
+
+// Copy file chunks using copy_file_range
+func fcopy(src, dst *os.File, start, end int64, wg *sync.WaitGroup) {
+	defer wg.Done()
+	remaining := end - start
+	for remaining > 0 {
+		n, err := unix.CopyFileRange(int(src.Fd()), &start, int(dst.Fd()), &start, int(remaining), 0)
+		if err != nil {
+			log.Fatalf("copy_file_range error: %v", err)
+		}
+		if n <= 0 {
+			break
+		}
+		remaining -= int64(n)
 	}
 }
 
