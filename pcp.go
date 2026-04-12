@@ -109,7 +109,7 @@ func pcopy(source, destination string) error {
 	}
 
 	// Don't run parallel jobs for small files
-	if srcSize < int64(256*os.Getpagesize()) {
+	if srcSize < int64(512*os.Getpagesize()) {
 		*threads = 1
 	}
 
@@ -131,6 +131,12 @@ func pcopy(source, destination string) error {
 		endOffset += chunk
 	}
 	wg.Wait()
+	if *fsync {
+		err = unix.Fsync(int(dst.Fd()))
+		if err != nil {
+			return err
+		}
+	}
 	return dst.Close()
 }
 
@@ -149,7 +155,7 @@ func mcopy(src, dst *os.File, start, end int64, wg *sync.WaitGroup) {
 		log.Fatalln(err)
 	}
 	defer unix.Munmap(s)
-	err = unix.Madvise(s, unix.MADV_SEQUENTIAL)
+	err = unix.Madvise(s, unix.MADV_SEQUENTIAL|unix.MADV_WILLNEED)
 	if err != nil {
 		log.Fatalln(err)
 	}
@@ -162,13 +168,8 @@ func mcopy(src, dst *os.File, start, end int64, wg *sync.WaitGroup) {
 		unix.Munmap(d)
 		log.Fatalln("Short write")
 	}
-	if *fsync {
-		err = unix.Msync(d, unix.MS_SYNC)
-		if err != nil {
-			unix.Munmap(d)
-			log.Fatalln(err)
-		}
-	}
+	unix.Madvise(s, unix.MADV_DONTNEED)
+	unix.Madvise(d, unix.MADV_DONTNEED)
 	err = unix.Munmap(d)
 	if err != nil {
 		log.Fatalln(err)
