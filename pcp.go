@@ -31,6 +31,7 @@ import (
 var (
 	force   = flag.Bool("f", false, "Overwrite destination file if it exists.")
 	fsync   = flag.Bool("s", false, "Sync file to disk after done copying data.")
+	frange  = flag.Bool("c", false, "Use copy_file_range to copy data (Linux only).")
 	threads = flag.Int("t", 0, "Specifies the number of threads used to copy data simultaneously.")
 )
 
@@ -108,7 +109,7 @@ func pcopy(source, destination string) error {
 	}
 
 	// Don't run parallel jobs for small files
-	if srcSize < int64(256*os.Getpagesize()) {
+	if srcSize < int64(512*os.Getpagesize()) {
 		*threads = 1
 	}
 
@@ -121,11 +122,21 @@ func pcopy(source, destination string) error {
 			endOffset = srcSize
 		}
 		wg.Add(1)
-		go mcopy(src, dst, startOffset, endOffset, wg)
+		if *frange {
+			go fcopy(src, dst, startOffset, endOffset, wg)
+		} else {
+			go mcopy(src, dst, startOffset, endOffset, wg)
+		}
 		startOffset += chunk
 		endOffset += chunk
 	}
 	wg.Wait()
+	if *fsync {
+		err = unix.Fsync(int(dst.Fd()))
+		if err != nil {
+			return err
+		}
+	}
 	return dst.Close()
 }
 
@@ -144,7 +155,7 @@ func mcopy(src, dst *os.File, start, end int64, wg *sync.WaitGroup) {
 		log.Fatalln(err)
 	}
 	defer unix.Munmap(s)
-	err = unix.Madvise(s, unix.MADV_SEQUENTIAL)
+	err = unix.Madvise(s, unix.MADV_SEQUENTIAL|unix.MADV_WILLNEED)
 	if err != nil {
 		log.Fatalln(err)
 	}
@@ -157,16 +168,27 @@ func mcopy(src, dst *os.File, start, end int64, wg *sync.WaitGroup) {
 		unix.Munmap(d)
 		log.Fatalln("Short write")
 	}
-	if *fsync {
-		err = unix.Msync(d, unix.MS_SYNC)
-		if err != nil {
-			unix.Munmap(d)
-			log.Fatalln(err)
-		}
-	}
+	unix.Madvise(s, unix.MADV_DONTNEED)
+	unix.Madvise(d, unix.MADV_DONTNEED)
 	err = unix.Munmap(d)
 	if err != nil {
 		log.Fatalln(err)
+	}
+}
+
+// Copy file chunks using copy_file_range
+func fcopy(src, dst *os.File, start, end int64, wg *sync.WaitGroup) {
+	defer wg.Done()
+	remaining := end - start
+	for remaining > 0 {
+		n, err := unix.CopyFileRange(int(src.Fd()), &start, int(dst.Fd()), &start, int(remaining), 0)
+		if err != nil {
+			log.Fatalf("copy_file_range error: %v", err)
+		}
+		if n <= 0 {
+			break
+		}
+		remaining -= int64(n)
 	}
 }
 
